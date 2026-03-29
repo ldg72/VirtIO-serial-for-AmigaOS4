@@ -83,3 +83,48 @@ void virtqueue_activate(struct PCIDevice *device, struct virtqueue *vq) {
     
     virtio_pci_setup_queue(device, vq->queue_index, pfn);
 }
+
+/* Inserisce un buffer nella tabella dei descrittori */
+int16 virtqueue_add_buffer(struct virtqueue *vq, uint32 addr, uint32 len, uint16 flags) {
+    if (vq->num_free == 0) return -1;
+
+    uint16 head = vq->free_head;
+    struct virtq_desc *desc = &vq->desc[head];
+
+    desc->addr = (uint64)addr;
+    desc->len = len;
+    desc->flags = flags;
+    /* vq->free_head è già il prossimo nella catena */
+    vq->free_head = desc->next;
+    vq->num_free--;
+
+    /* Aggiorniamo l'Available Ring */
+    uint16 avail_idx = vq->avail->idx % vq->num;
+    vq->avail->ring[avail_idx] = head;
+    
+    /* Memory barrier logica (OS4 non richiede barrier esplicite qui per VirtIO Legacy su Pegasus in QEMU solitamente) */
+    vq->avail->idx++;
+
+    return head;
+}
+
+/* Recupera un buffer elaborato dall'host dall'Used Ring */
+int16 virtqueue_get_finished(struct virtqueue *vq, uint32 *len) {
+    if (vq->last_used_idx == vq->used->idx) {
+        return -1; /* Nulla di nuovo */
+    }
+
+    uint16 used_idx = vq->last_used_idx % vq->num;
+    struct virtq_used_elem *used_elem = &vq->used->ring[used_idx];
+
+    uint16 descriptor_idx = used_elem->id;
+    if (len) *len = used_elem->len;
+
+    /* Rimettiamo il descrittore nella lista libera */
+    vq->desc[descriptor_idx].next = vq->free_head;
+    vq->free_head = descriptor_idx;
+    vq->num_free++;
+
+    vq->last_used_idx++;
+    return descriptor_idx;
+}

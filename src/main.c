@@ -23,6 +23,10 @@ struct VirtioBase {
     struct Interrupt    isr_Node;
     uint32              irq_Num;
     struct Task         *dev_Task;
+    struct List         pending_IO;
+    struct IORequest    *rx_reqs[64]; /* Mapping Descriptor -> IORequest */
+    struct IORequest    *tx_reqs[64];
+    uint32              sig_bit;      /* Segnale per svegliare il task */
 };
 
 /* Entry point iniziale del binario: deve essere la prima cosa nel file */
@@ -107,15 +111,10 @@ STATIC CONST struct Resident romtag = {
 };
 
 /* Prototipi funzioni esterne */
-struct PCIDevice * find_virtio_serial_device();
-struct virtqueue * virtqueue_alloc(uint16 queue_size, uint16 queue_idx);
-void virtqueue_activate(struct PCIDevice *device, struct virtqueue *vq);
-void virtio_pci_reset(struct PCIDevice *device);
-void virtio_pci_set_status(struct PCIDevice *device, uint8 status);
-uint8 virtio_pci_get_status(struct PCIDevice *device);
-uint32 virtio_pci_get_features(struct PCIDevice *device);
-void virtio_pci_set_features(struct PCIDevice *device, uint32 features);
-uint8 virtio_pci_get_isr(struct PCIDevice *device);
+void virtio_pci_notify(struct PCIDevice *device, uint16 queue_idx);
+int16 virtqueue_add_buffer(struct virtqueue *vq, uint32 addr, uint32 len, uint16 flags);
+int16 virtqueue_get_finished(struct virtqueue *vq, uint32 *len);
+void DeviceTaskFunc(void);
 
 /* Funzione ISR (Interrupt Service Routine) */
 uint32 APICALL virtio_isr(struct Interrupt *intr, APTR data) {
@@ -130,12 +129,52 @@ uint32 APICALL virtio_isr(struct Interrupt *intr, APTR data) {
         return 0;
     }
 
-    /* 3. Se abbiamo nuovi dati, segnaliamo il task principale del driver (CTRL-C come segnale di test) */
+    /* 3. Se abbiamo nuovi dati, segnaliamo il task principale del driver */
     if (base->dev_Task) {
-        IExec->Signal(base->dev_Task, SIGBREAKF_CTRL_C);
+        IExec->Signal(base->dev_Task, (1 << base->sig_bit));
     }
 
     return 1;
+}
+
+/* Funzione del Task di Background */
+void DeviceTaskFunc(void) {
+    struct VirtioBase *base = (struct VirtioBase *)IExec->FindTask(NULL)->tc_UserData;
+    uint32 wait_mask = (1 << base->sig_bit) | SIGBREAKF_CTRL_F;
+
+    while (1) {
+        uint32 signals = IExec->Wait(wait_mask);
+
+        /* Se riceviamo il segnale di chiusura (CTRL-F), usciamo */
+        if (signals & SIGBREAKF_CTRL_F) break;
+
+        /* Scansione RX (Ricezione dati) */
+        uint32 len = 0;
+        int16 idx;
+        while ((idx = virtqueue_get_finished(base->rx_queue, &len)) >= 0) {
+            struct IORequest *ior = base->rx_reqs[idx];
+            if (ior) {
+                ior->io_Actual = len;
+                ior->io_Error = 0;
+                base->rx_reqs[idx] = NULL;
+                IExec->ReplyMsg(&ior->io_Message);
+            }
+        }
+
+        /* Scansione TX (Invio completato) */
+        while ((idx = virtqueue_get_finished(base->tx_queue, &len)) >= 0) {
+            struct IORequest *ior = base->tx_reqs[idx];
+            if (ior) {
+                ior->io_Actual = len;
+                ior->io_Error = 0;
+                base->tx_reqs[idx] = NULL;
+                IExec->ReplyMsg(&ior->io_Message);
+            }
+        }
+    }
+    
+    /* Fine del task */
+    base->dev_Task = NULL;
 }
 
 /* Definizione globale dell'interfaccia Exec */
@@ -161,6 +200,7 @@ struct Library * APICALL LibInit(struct Library *library, APTR seglist, struct I
     base->rx_queue = NULL;
     base->tx_queue = NULL;
     base->dev_Task = NULL;
+    IExec->NewList(&base->pending_IO);
     
     /* Configurazione nodo Interrupt */
     base->isr_Node.is_Node.ln_Type = NT_INTERRUPT;
@@ -234,8 +274,15 @@ VOID APICALL DevOpen(struct DeviceManagerInterface *Self, struct IORequest *ior,
             /* Registrazione ISR nel sistema AmigaOS */
             base->irq_Num = base->pci_Dev->MapInterrupt();
             if (base->irq_Num != 0xFFFFFFFF) {
-                base->dev_Task = IExec->FindTask(NULL);
-                IExec->AddIntServer(base->irq_Num, &base->isr_Node);
+                /* Allocazione di un segnale unico per il task */
+                base->sig_bit = IExec->AllocSignal(-1);
+                
+                /* Creazione del task di supporto */
+                base->dev_Task = IExec->CreateTask((STRPTR)"virtio-serial helper", 0, (APTR)DeviceTaskFunc, 4096);
+                if (base->dev_Task) {
+                    base->dev_Task->tc_UserData = base;
+                    IExec->AddIntServer(base->irq_Num, &base->isr_Node);
+                }
             }
 
             virtio_pci_set_status(base->pci_Dev, virtio_pci_get_status(base->pci_Dev) | VIRTIO_STATUS_DRIVER_OK);
@@ -253,19 +300,40 @@ APTR APICALL DevClose(struct DeviceManagerInterface *Self, struct IORequest *ior
 }
 
 VOID APICALL DevBeginIO(struct DeviceManagerInterface *Self, struct IORequest *ior) {
+    struct VirtioBase *base = (struct VirtioBase *)Self->Data.LibBase;
+    int16 desc_idx = -1;
+
     /* Gestione CMD_READ / CMD_WRITE */
     switch (ior->io_Command) {
         case CMD_READ:
-            /* Logica RX */
+            /* Forniamo un buffer alla coda RX per ricevere dati */
+            desc_idx = virtqueue_add_buffer(base->rx_queue, (uint32)ior->io_Data, ior->io_Length, VIRTQ_DESC_F_WRITE);
+            if (desc_idx >= 0) {
+                base->rx_reqs[desc_idx] = ior;
+                virtio_pci_notify(base->pci_Dev, 0); 
+            } else {
+                ior->io_Error = IOERR_OPENFAIL;
+                IExec->ReplyMsg(&ior->io_Message);
+            }
             break;
+
         case CMD_WRITE:
-            /* Logica TX */
+            /* Inseriamo i dati nella coda TX */
+            desc_idx = virtqueue_add_buffer(base->tx_queue, (uint32)ior->io_Data, ior->io_Length, 0);
+            if (desc_idx >= 0) {
+                base->tx_reqs[desc_idx] = ior;
+                virtio_pci_notify(base->pci_Dev, 1);
+            } else {
+                ior->io_Error = IOERR_OPENFAIL;
+                IExec->ReplyMsg(&ior->io_Message);
+            }
             break;
+
         default:
             ior->io_Error = IOERR_NOCMD;
+            IExec->ReplyMsg(&ior->io_Message);
             break;
     }
-    IExec->ReplyMsg(&ior->io_Message);
 }
 
 VOID APICALL DevAbortIO(struct DeviceManagerInterface *Self, struct IORequest *ior) {
