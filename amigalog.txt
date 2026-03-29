@@ -1,4 +1,4 @@
-6.RAM Disk:> make
+ make
 gcc -O2 -Wall -I./src -ISDK:Include/include_h -c src/main.c -o src/main.o
 src/main.c: In function 'virtio_isr':
 src/main.c:126:18: warning: implicit declaration of function 'virtio_pci_get_isr'; did you mean 'virtio_pci_notify'? [-Wimplicit-function-declaration]
@@ -38,4 +38,5 @@ src/main.c:72:19: warning: 'device_manager_vectors' defined but not used [-Wunus
    72 | STATIC CONST APTR device_manager_vectors[] = {
       |                   ^~~~~~~~~~~~~~~~~~~~~~
 make: *** [src/main.o] Error 1
-6.RAM Disk:> 
+6.RAM Disk:>
+ 

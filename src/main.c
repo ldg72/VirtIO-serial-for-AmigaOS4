@@ -92,6 +92,11 @@ STATIC CONST struct TagItem lib_manager_tags[] = {
     { TAG_DONE, 0 }
 };
 
+STATIC CONST struct TagItem device_manager_tags[] = {
+    { MIT_VectorTable, (uint32)device_manager_vectors },
+    { TAG_DONE, 0 }
+};
+
 /* Dati per l'auto-inizializzazione della InitTable */
 STATIC CONST uint32 lib_init_table[] = {
     sizeof(struct VirtioBase),
