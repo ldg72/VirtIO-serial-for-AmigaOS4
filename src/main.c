@@ -7,6 +7,7 @@
 #include <proto/exec.h>
 #include <proto/expansion.h>
 #include <proto/dos.h>
+#include <interfaces/dos.h>
 
 #include "virtio_pci.h"
 #include "virtqueue.h"
@@ -89,11 +90,6 @@ STATIC CONST APTR device_manager_vectors[] = {
 /* Tabelle di inizializzazione per RTF_AUTOINIT */
 STATIC CONST struct TagItem lib_manager_tags[] = {
     { MIT_VectorTable, (uint32)lib_manager_vectors },
-    { TAG_DONE, 0 }
-};
-
-STATIC CONST struct TagItem device_manager_tags[] = {
-    { MIT_VectorTable, (uint32)device_manager_vectors },
     { TAG_DONE, 0 }
 };
 

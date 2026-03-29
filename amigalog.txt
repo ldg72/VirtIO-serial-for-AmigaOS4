@@ -1,42 +1,13 @@
- make
+make
 gcc -O2 -Wall -I./src -ISDK:Include/include_h -c src/main.c -o src/main.o
-src/main.c: In function 'virtio_isr':
-src/main.c:126:18: warning: implicit declaration of function 'virtio_pci_get_isr'; did you mean 'virtio_pci_notify'? [-Wimplicit-function-declaration]
-  126 |     isr_status = virtio_pci_get_isr(base->pci_Dev);
-      |                  ^~~~~~~~~~~~~~~~~~
-      |                  virtio_pci_notify
-src/main.c: In function 'DeviceTaskFunc':
-src/main.c:158:20: error: 'struct IORequest' has no member named 'io_Actual'
-  158 |                 ior->io_Actual = len;
-      |                    ^~
-src/main.c:169:20: error: 'struct IORequest' has no member named 'io_Actual'
-  169 |                 ior->io_Actual = len;
-      |                    ^~
-src/main.c: In function 'DevOpen':
-src/main.c:295:34: error: too few arguments to function 'IExec->CreateTask'
-  295 |                 base->dev_Task = IExec->CreateTask((STRPTR)"virtio-serial helper", 0, (APTR)DeviceTaskFunc, 4096);
-      |                                  ^~~~~
 src/main.c: In function 'DevClose':
-src/main.c:329:18: error: 'struct ExecIFace' has no member named 'Delay'
-  329 |             IExec->Delay(2);
-      |                  ^~
-src/main.c: In function 'DevBeginIO':
-src/main.c:366:72: error: 'struct IORequest' has no member named 'io_Data'
-  366 |             desc_idx = virtqueue_add_buffer(base->rx_queue, (uint32)ior->io_Data, ior->io_Length, VIRTQ_DESC_F_WRITE);
-      |                                                                        ^~
-src/main.c:366:86: error: 'struct IORequest' has no member named 'io_Length'
-  366 |             desc_idx = virtqueue_add_buffer(base->rx_queue, (uint32)ior->io_Data, ior->io_Length, VIRTQ_DESC_F_WRITE);
-      |                                                                                      ^~
-src/main.c:378:72: error: 'struct IORequest' has no member named 'io_Data'
-  378 |             desc_idx = virtqueue_add_buffer(base->tx_queue, (uint32)ior->io_Data, ior->io_Length, 0);
-      |                                                                        ^~
-src/main.c:378:86: error: 'struct IORequest' has no member named 'io_Length'
-  378 |             desc_idx = virtqueue_add_buffer(base->tx_queue, (uint32)ior->io_Data, ior->io_Length, 0);
-      |                                                                                      ^~
+src/main.c:357:27: error: invalid use of undefined type 'struct DosIFace'
+  357 |             if (IDos) IDos->Delay(2);
+      |                           ^~
 At top level:
-src/main.c:72:19: warning: 'device_manager_vectors' defined but not used [-Wunused-const-variable=]
-   72 | STATIC CONST APTR device_manager_vectors[] = {
-      |                   ^~~~~~~~~~~~~~~~~~~~~~
+src/main.c:95:29: warning: 'device_manager_tags' defined but not used [-Wunused-const-variable=]
+   95 | STATIC CONST struct TagItem device_manager_tags[] = {
+      |                             ^~~~~~~~~~~~~~~~~~~
 make: *** [src/main.o] Error 1
-6.RAM Disk:>
- 
+6.RAM Disk:> 
+
