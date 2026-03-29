@@ -26,7 +26,8 @@ struct VirtioBase {
     struct List         pending_IO;
     struct IORequest    *rx_reqs[64]; /* Mapping Descriptor -> IORequest */
     struct IORequest    *tx_reqs[64];
-    uint32              sig_bit;      /* Segnale per svegliare il task */
+    uint32              sig_bit;
+    APTR                seg_List;
 };
 
 /* Entry point iniziale del binario: deve essere la prima cosa nel file */
@@ -195,6 +196,7 @@ struct Library * APICALL LibInit(struct Library *library, APTR seglist, struct I
     base->lib_Base.lib_Version = DEVICE_VERSION;
     base->lib_Base.lib_Revision = DEVICE_REVISION;
     base->lib_Base.lib_IdString = (STRPTR)DEVICE_ID_STRING;
+    base->seg_List = seglist;
     
     base->pci_Dev = NULL;
     base->rx_queue = NULL;
@@ -234,6 +236,18 @@ APTR APICALL LibClose(struct LibraryManagerInterface *Self) {
 }
 
 APTR APICALL LibExpunge(struct LibraryManagerInterface *Self) {
+    struct VirtioBase *base = (struct VirtioBase *)Self->Data.LibBase;
+    APTR seglist = NULL;
+
+    if (base->lib_Base.lib_OpenCnt == 0) {
+        /* Rimozione finale della libreria dalla memoria */
+        seglist = base->seg_List;
+        IExec->Remove(&base->lib_Base.lib_Node);
+        IExec->FreeVec(base);
+        return seglist;
+    }
+    
+    base->lib_Base.lib_Flags |= LIBF_DELEXP;
     return NULL;
 }
 
@@ -296,6 +310,48 @@ VOID APICALL DevOpen(struct DeviceManagerInterface *Self, struct IORequest *ior,
 }
 
 APTR APICALL DevClose(struct DeviceManagerInterface *Self, struct IORequest *ior) {
+    struct VirtioBase *base = (struct VirtioBase *)Self->Data.LibBase;
+    
+    base->lib_Base.lib_OpenCnt--;
+
+    /* Se non ci sono più utenti, puliamo l'hardware */
+    if (base->lib_Base.lib_OpenCnt == 0) {
+        /* 1. Rimuoviamo la ISR */
+        if (base->irq_Num != 0xFFFFFFFF) {
+            IExec->RemIntServer(base->irq_Num, &base->isr_Node);
+            base->irq_Num = 0xFFFFFFFF;
+        }
+
+        /* 2. Fermiamo il Task di Background */
+        if (base->dev_Task) {
+            IExec->Signal(base->dev_Task, SIGBREAKF_CTRL_F);
+            /* Attendiamo un attimo che il task esca (opzionale, ma sicuro) */
+            IExec->Delay(2);
+        }
+
+        /* 3. Reset hardware VirtIO */
+        if (base->pci_Dev) {
+            virtio_pci_set_status(base->pci_Dev, 0); /* Reset */
+            virtio_pci_reset(base->pci_Dev);
+        }
+
+        /* 4. Liberiamo le code */
+        if (base->rx_queue) {
+            virtqueue_free(base->rx_queue);
+            base->rx_queue = NULL;
+        }
+        if (base->tx_queue) {
+            virtqueue_free(base->tx_queue);
+            base->tx_queue = NULL;
+        }
+        
+        /* Libera segnale */
+        if (base->sig_bit != 0xFFFFFFFF) {
+            IExec->FreeSignal(base->sig_bit);
+            base->sig_bit = 0xFFFFFFFF;
+        }
+    }
+
     return NULL;
 }
 
