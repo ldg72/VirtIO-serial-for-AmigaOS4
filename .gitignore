@@ -1,0 +1,15 @@
+# Compilazione
+*.o
+virtio-serial.device
+
+# SDK (troppo grande, va installato separatamente)
+SDK/
+
+# Sistema
+.DS_Store
+.gemini/
+/tmp/
+
+# Log
+*.log
+src/amigalog.txt
