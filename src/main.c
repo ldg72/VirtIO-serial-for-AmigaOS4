@@ -6,12 +6,15 @@
 #include <exec/interrupts.h>
 #include <proto/exec.h>
 #include <proto/expansion.h>
+#include <proto/dos.h>
 
 #include "virtio_pci.h"
 #include "virtqueue.h"
 
 /* Dichiarazione globale dell'interfaccia Exec (necessaria per OS4) */
 extern struct ExecIFace *IExec;
+struct DosIFace *IDos = NULL;
+struct Library *DosBase = NULL;
 
 /* Estensione del device base per memorizzare lo stato hardware */
 struct VirtioBase {
@@ -111,11 +114,19 @@ STATIC CONST struct Resident romtag = {
     (APTR)lib_init_table
 };
 
-/* Prototipi funzioni esterne */
 void virtio_pci_notify(struct PCIDevice *device, uint16 queue_idx);
 int16 virtqueue_add_buffer(struct virtqueue *vq, uint32 addr, uint32 len, uint16 flags);
 int16 virtqueue_get_finished(struct virtqueue *vq, uint32 *len);
 void DeviceTaskFunc(void);
+struct PCIDevice * find_virtio_serial_device();
+struct virtqueue * virtqueue_alloc(uint16 queue_size, uint16 queue_idx);
+void virtqueue_activate(struct PCIDevice *device, struct virtqueue *vq);
+void virtio_pci_reset(struct PCIDevice *device);
+void virtio_pci_set_status(struct PCIDevice *device, uint8 status);
+uint8 virtio_pci_get_status(struct PCIDevice *device);
+uint32 virtio_pci_get_features(struct PCIDevice *device);
+void virtio_pci_set_features(struct PCIDevice *device, uint32 features);
+uint8 virtio_pci_get_isr(struct PCIDevice *device);
 
 /* Funzione ISR (Interrupt Service Routine) */
 uint32 APICALL virtio_isr(struct Interrupt *intr, APTR data) {
@@ -140,7 +151,8 @@ uint32 APICALL virtio_isr(struct Interrupt *intr, APTR data) {
 
 /* Funzione del Task di Background */
 void DeviceTaskFunc(void) {
-    struct VirtioBase *base = (struct VirtioBase *)IExec->FindTask(NULL)->tc_UserData;
+    struct Task *thisTask = IExec->FindTask(NULL);
+    struct VirtioBase *base = (struct VirtioBase *)thisTask->tc_UserData;
     uint32 wait_mask = (1 << base->sig_bit) | SIGBREAKF_CTRL_F;
 
     while (1) {
@@ -153,7 +165,7 @@ void DeviceTaskFunc(void) {
         uint32 len = 0;
         int16 idx;
         while ((idx = virtqueue_get_finished(base->rx_queue, &len)) >= 0) {
-            struct IORequest *ior = base->rx_reqs[idx];
+            struct IOStdReq *ior = (struct IOStdReq *)base->rx_reqs[idx];
             if (ior) {
                 ior->io_Actual = len;
                 ior->io_Error = 0;
@@ -164,7 +176,7 @@ void DeviceTaskFunc(void) {
 
         /* Scansione TX (Invio completato) */
         while ((idx = virtqueue_get_finished(base->tx_queue, &len)) >= 0) {
-            struct IORequest *ior = base->tx_reqs[idx];
+            struct IOStdReq *ior = (struct IOStdReq *)base->tx_reqs[idx];
             if (ior) {
                 ior->io_Actual = len;
                 ior->io_Error = 0;
@@ -188,6 +200,12 @@ struct Library * APICALL LibInit(struct Library *library, APTR seglist, struct I
 
     /* Inizializziamo l'interfaccia Exec globale */
     IExec = (struct ExecIFace *)exec;
+
+    /* Apriamo la dos.library per IDos->Delay */
+    DosBase = IExec->OpenLibrary((STRPTR)"dos.library", 52);
+    if (DosBase) {
+        IDos = (struct DosIFace *)IExec->GetInterface(DosBase, (STRPTR)"main", 1, NULL);
+    }
 
     /* Inizializzazione base del device */
     base->lib_Base.lib_Node.ln_Type = NT_DEVICE;
@@ -243,6 +261,11 @@ APTR APICALL LibExpunge(struct LibraryManagerInterface *Self) {
         /* Rimozione finale della libreria dalla memoria */
         seglist = base->seg_List;
         IExec->Remove(&base->lib_Base.lib_Node);
+
+        /* Rilascio IDos e chiusura libreria DOS */
+        if (IDos) IExec->DropInterface((struct Interface *)IDos);
+        if (DosBase) IExec->CloseLibrary(DosBase);
+
         IExec->FreeVec(base);
         return seglist;
     }
@@ -291,8 +314,8 @@ VOID APICALL DevOpen(struct DeviceManagerInterface *Self, struct IORequest *ior,
                 /* Allocazione di un segnale unico per il task */
                 base->sig_bit = IExec->AllocSignal(-1);
                 
-                /* Creazione del task di supporto */
-                base->dev_Task = IExec->CreateTask((STRPTR)"virtio-serial helper", 0, (APTR)DeviceTaskFunc, 4096);
+                /* Creazione del task di supporto (con NULL per i tag list in OS4) */
+                base->dev_Task = IExec->CreateTask((STRPTR)"virtio-serial helper", 0, (APTR)DeviceTaskFunc, 4096, NULL);
                 if (base->dev_Task) {
                     base->dev_Task->tc_UserData = base;
                     IExec->AddIntServer(base->irq_Num, &base->isr_Node);
@@ -325,8 +348,8 @@ APTR APICALL DevClose(struct DeviceManagerInterface *Self, struct IORequest *ior
         /* 2. Fermiamo il Task di Background */
         if (base->dev_Task) {
             IExec->Signal(base->dev_Task, SIGBREAKF_CTRL_F);
-            /* Attendiamo un attimo che il task esca (opzionale, ma sicuro) */
-            IExec->Delay(2);
+            /* Attendiamo un attimo che il task esca */
+            if (IDos) IDos->Delay(2);
         }
 
         /* 3. Reset hardware VirtIO */
@@ -357,13 +380,14 @@ APTR APICALL DevClose(struct DeviceManagerInterface *Self, struct IORequest *ior
 
 VOID APICALL DevBeginIO(struct DeviceManagerInterface *Self, struct IORequest *ior) {
     struct VirtioBase *base = (struct VirtioBase *)Self->Data.LibBase;
+    struct IOStdReq *std_ior = (struct IOStdReq *)ior;
     int16 desc_idx = -1;
 
     /* Gestione CMD_READ / CMD_WRITE */
     switch (ior->io_Command) {
         case CMD_READ:
             /* Forniamo un buffer alla coda RX per ricevere dati */
-            desc_idx = virtqueue_add_buffer(base->rx_queue, (uint32)ior->io_Data, ior->io_Length, VIRTQ_DESC_F_WRITE);
+            desc_idx = virtqueue_add_buffer(base->rx_queue, (uint32)std_ior->io_Data, std_ior->io_Length, VIRTQ_DESC_F_WRITE);
             if (desc_idx >= 0) {
                 base->rx_reqs[desc_idx] = ior;
                 virtio_pci_notify(base->pci_Dev, 0); 
@@ -375,7 +399,7 @@ VOID APICALL DevBeginIO(struct DeviceManagerInterface *Self, struct IORequest *i
 
         case CMD_WRITE:
             /* Inseriamo i dati nella coda TX */
-            desc_idx = virtqueue_add_buffer(base->tx_queue, (uint32)ior->io_Data, ior->io_Length, 0);
+            desc_idx = virtqueue_add_buffer(base->tx_queue, (uint32)std_ior->io_Data, std_ior->io_Length, 0);
             if (desc_idx >= 0) {
                 base->tx_reqs[desc_idx] = ior;
                 virtio_pci_notify(base->pci_Dev, 1);
