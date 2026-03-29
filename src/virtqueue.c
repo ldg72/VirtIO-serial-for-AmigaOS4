@@ -1,4 +1,5 @@
 #include <exec/types.h>
+#include <exec/execbase.h>
 #include <exec/memory.h>
 #include <proto/exec.h>
 #include <proto/expansion.h>
@@ -8,6 +9,7 @@
 
 /* Riferimento all'interfaccia Exec globale definita in main.c */
 extern struct ExecIFace *IExec;
+extern struct MMUIFace *IMMU;
 
 /* Allinea un indirizzo al prossimo blocco di dimensione Align */
 #define ALIGN_UP(addr, align) (((addr) + (align) - 1) & ~((align) - 1))
@@ -78,20 +80,32 @@ void virtqueue_free(struct virtqueue *vq) {
 /* Inizializzazione fisica (PFN) sulla scheda PCI */
 void virtqueue_activate(struct PCIDevice *device, struct virtqueue *vq) {
     /* Il PFN (Page Frame Number) per VirtIO Legacy è l'indirizzo fisico / 4096 */
-    uint32 physical_addr = (uint32)vq->desc;
+    uint32 physical_addr = (uint32)IMMU->GetPhysicalAddress((APTR)vq->desc);
     uint32 pfn = physical_addr >> 12;
-    
+
     virtio_pci_setup_queue(device, vq->queue_index, pfn);
 }
 
 /* Inserisce un buffer nella tabella dei descrittori */
 int16 virtqueue_add_buffer(struct virtqueue *vq, uint32 addr, uint32 len, uint16 flags) {
+    ULONG dma_len = len;
+    APTR physical_addr;
+
     if (vq->num_free == 0) return -1;
+
+    physical_addr = IMMU->GetPhysicalAddress((APTR)addr);
+    if (!physical_addr) return -1;
+
+    if (flags & VIRTQ_DESC_F_WRITE) {
+        IExec->CachePreDMA((APTR)addr, &dma_len, 0);
+    } else {
+        IExec->CachePreDMA((APTR)addr, &dma_len, DMAF_ReadFromRAM | DMAF_NoModify);
+    }
 
     uint16 head = vq->free_head;
     struct virtq_desc *desc = &vq->desc[head];
 
-    desc->addr = (uint64)addr;
+    desc->addr = (uint64)(uint32)physical_addr;
     desc->len = len;
     desc->flags = flags;
     /* vq->free_head è già il prossimo nella catena */

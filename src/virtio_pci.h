@@ -7,7 +7,6 @@
 /* VirtIO PCI Vendor/Device IDs */
 #define VIRTIO_VENDOR_ID          0x1AF4
 #define VIRTIO_DEVICE_ID_SERIAL   0x1003  /* Legacy Serial */
-#define VIRTIO_DEVICE_ID_CONSOLE  0x1043  /* Modern Console */
 
 /* VirtIO PCI Legacy Register Offsets (BAR0) */
 #define VIRTIO_PCI_HOST_FEATURES  0x00  /* 32-bit R */
@@ -40,7 +39,9 @@ void virtio_pci_set_status(struct PCIDevice *device, uint8 status);
 void virtio_pci_reset(struct PCIDevice *device);
 uint32 virtio_pci_get_features(struct PCIDevice *device);
 void virtio_pci_set_features(struct PCIDevice *device, uint32 features);
+uint16 virtio_pci_get_queue_size(struct PCIDevice *device, uint16 queue_idx);
 void virtio_pci_setup_queue(struct PCIDevice *device, uint16 queue_idx, uint32 pfn);
 void virtio_pci_notify(struct PCIDevice *device, uint16 queue_idx);
+void virtio_pci_free_device(struct PCIDevice *device);
 
 #endif /* VIRTIO_PCI_H */

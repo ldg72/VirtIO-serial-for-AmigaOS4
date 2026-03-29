@@ -24,16 +24,7 @@ struct PCIDevice * find_virtio_serial_device() {
                 FDT_DeviceID, VIRTIO_DEVICE_ID_SERIAL,
                 TAG_DONE
             );
-            
-            /* Se non trovato, proviamo il Modern ID 0x1043 */
-            if (!device) {
-                device = IPCI->FindDeviceTags(
-                    FDT_VendorID, VIRTIO_VENDOR_ID,
-                    FDT_DeviceID, VIRTIO_DEVICE_ID_CONSOLE,
-                    TAG_DONE
-                );
-            }
-            
+
             IExec->DropInterface((struct Interface *)IPCI);
         }
         IExec->CloseLibrary(ExpansionBase);
@@ -65,6 +56,11 @@ void virtio_pci_set_features(struct PCIDevice *device, uint32 features) {
     device->OutLong(VIRTIO_PCI_GUEST_FEATURES, features);
 }
 
+uint16 virtio_pci_get_queue_size(struct PCIDevice *device, uint16 queue_idx) {
+    device->OutWord(VIRTIO_PCI_QUEUE_SEL, queue_idx);
+    return device->InWord(VIRTIO_PCI_QUEUE_SIZE);
+}
+
 /* Selezione e configurazione di una VirtQueue */
 void virtio_pci_setup_queue(struct PCIDevice *device, uint16 queue_idx, uint32 pfn) {
     device->OutWord(VIRTIO_PCI_QUEUE_SEL, queue_idx);
@@ -79,4 +75,10 @@ void virtio_pci_notify(struct PCIDevice *device, uint16 queue_idx) {
 /* Lettura del registro ISR per confermare l'identità dell'interrupt */
 uint8 virtio_pci_get_isr(struct PCIDevice *device) {
     return device->InByte(VIRTIO_PCI_ISR);
+}
+
+void virtio_pci_free_device(struct PCIDevice *device) {
+    if (device) {
+        device->Release();
+    }
 }
